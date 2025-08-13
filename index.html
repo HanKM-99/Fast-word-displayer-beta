@@ -1,0 +1,941 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Word Displayer</title>
+
+  <!-- Google Font: Inter -->
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
+
+  <!-- Tailwind via CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: { inter: ['Inter', 'ui-sans-serif', 'system-ui'] },
+          keyframes: {
+            fadeIn: { '0%': { opacity: 0 }, '100%': { opacity: 1 } },
+            fadeOut: { '0%': { opacity: 1 }, '100%': { opacity: 0 } },
+            slideUp: { '0%': { transform: 'translateY(12px)', opacity: 0 }, '100%': { transform: 'translateY(0)', opacity: 1 } },
+          },
+          animation: {
+            fadeIn: 'fadeIn .25s ease-out',
+            fadeOut: 'fadeOut .25s ease-in',
+            slideUp: 'slideUp .25s ease-out',
+          },
+        }
+      }
+    }
+  </script>
+
+  <!-- PDF.js & worker -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.min.js"></script>
+  <script>
+    // Configure worker for pdf.js
+    if (window['pdfjsLib']) {
+      pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.worker.min.js';
+    }
+  </script>
+
+  <!-- JSZip for EPUB -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+
+  <style>
+    html, body { height: 100%; background: #000; }
+    body { color: #fff; font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto; }
+    /* Smooth transitions on container brightness */
+    #appRoot { transition: filter 200ms ease; }
+
+    /* Hide scrollbars in log only for a cleaner look */
+    .thin-scroll::-webkit-scrollbar { width: 8px; }
+    .thin-scroll::-webkit-scrollbar-thumb { background: #2a2a2a; border-radius: 8px; }
+
+    /* Fullscreen: body class used to suppress regular UI */
+    body.is-fullscreen .app-chrome { display: none !important; }
+    body.is-fullscreen .creator-credit { display: none !important; }
+
+    /* Prevent text selection while playing to reduce accidental highlights */
+    .noselect { user-select: none; }
+
+    /* Drag-over styling for drop zone */
+    .drag-over {
+      outline: 2px dashed #3b82f6;
+      outline-offset: -4px;
+      background-color: rgba(59, 130, 246, 0.1);
+    }
+  </style>
+</head>
+<body class="min-h-screen bg-black text-white">
+  <div id="appRoot" class="min-h-screen flex flex-col app-chrome">
+    <!-- Header -->
+    <header class="w-full px-4 sm:px-6 lg:px-8 py-4 border-b border-white/10 sticky top-0 z-20 bg-black/80 backdrop-blur">
+      <div class="max-w-6xl mx-auto flex items-center justify-between">
+        <div class="flex items-center gap-3">
+          <div class="h-8 w-8 rounded-lg bg-white/10 flex items-center justify-center font-bold">WD</div>
+          <h1 class="text-xl sm:text-2xl font-bold tracking-tight">Word Displayer</h1>
+        </div>
+        <div class="flex items-center gap-2">
+          <button id="startPauseBtn" class="px-4 py-2 rounded-xl text-sm font-semibold bg-blue-600 hover:bg-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-400 transition">Start Playback</button>
+          <button id="fullscreenBtn" class="px-4 py-2 rounded-xl text-sm font-semibold bg-white/10 hover:bg-white/20 focus:outline-none focus:ring-2 focus:ring-white/30 transition">Toggle Fullscreen</button>
+        </div>
+      </div>
+
+      <!-- Tabs -->
+      <div class="max-w-6xl mx-auto mt-4">
+        <nav class="inline-flex rounded-xl overflow-hidden border border-white/10">
+          <button data-tab="settings" class="tab-btn px-4 py-2 text-sm font-medium bg-white/10">Settings</button>
+          <button data-tab="analyzer" class="tab-btn px-4 py-2 text-sm font-medium hover:bg-white/10">Analyzer</button>
+          <button data-tab="converter" class="tab-btn px-4 py-2 text-sm font-medium hover:bg-white/10">Converter</button>
+        </nav>
+      </div>
+    </header>
+
+    <!-- Word Display (non-fullscreen) -->
+    <main class="flex-1 w-full">
+      <section class="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <div class="rounded-2xl border border-white/10 bg-white/5 p-6 sm:p-8">
+          <div id="displayWrapper" class="min-h-[28vh] sm:min-h-[34vh] md:min-h-[40vh] lg:min-h-[48vh] flex items-center justify-center rounded-xl bg-black/60 ring-1 ring-white/10">
+            <div class="text-center select-none noselect">
+              <div id="currentWord" class="font-extrabold tracking-tight leading-none" style="font-size: 64px;">Ready?</div>
+              <div id="subtleHint" class="mt-4 text-xs text-white/50">Press <span class="font-semibold">Space</span> to play/pause — <span class="font-semibold">Shift+Enter</span> for fullscreen</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab Panels -->
+        <div class="mt-8 grid grid-cols-1 gap-6" id="tabPanels">
+          <!-- SETTINGS TAB -->
+          <div id="tab-settings" class="tab-panel">
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+              <!-- Text input -->
+              <div class="lg:col-span-2 rounded-2xl border border-white/10 bg-white/5 p-4 sm:p-6">
+                <label for="inputText" class="block text-sm font-semibold mb-2">Input Text (or drop a .txt file)</label>
+                <textarea id="inputText" class="w-full h-[260px] rounded-xl bg-black/60 border border-white/10 p-4 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 placeholder-white/30 transition-colors" placeholder="Paste your text here, or drag and drop a .txt file onto this area."></textarea>
+                <div class="mt-4 flex items-center justify-between gap-3">
+                   <div class="text-xs text-white/60 flex items-center gap-4">
+                    <div><span class="font-semibold">Words:</span> <span id="textInfoWordCount">0</span></div>
+                    <div><span class="font-semibold">Est. Time:</span> <span id="textInfoTime">0m 0s</span></div>
+                  </div>
+                  <div>
+                    <label class="inline-flex items-center gap-2 cursor-pointer text-xs">
+                      <input id="autoFullscreenOnStart" type="checkbox" class="h-4 w-4 rounded border-white/20 bg-black/40" />
+                      <span>Ask for fullscreen on Start</span>
+                    </label>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Controls -->
+              <div class="rounded-2xl border border-white/10 bg-white/5 p-4 sm:p-6 space-y-6">
+                <!-- Speed -->
+                <div>
+                  <div class="flex items-center justify-between mb-1">
+                    <label class="text-sm font-semibold">Speed (words per minute)</label>
+                    <div class="flex items-center gap-2">
+                      <button class="ctrl-btn wpm-dec px-2 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-sm">-</button>
+                      <input id="wpmInput" type="number" min="50" max="1000" step="10" class="w-20 rounded-lg bg-black/60 border border-white/10 p-1.5 text-sm text-center" />
+                      <button class="ctrl-btn wpm-inc px-2 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-sm">+</button>
+                    </div>
+                  </div>
+                  <input id="wpmRange" type="range" min="50" max="1000" step="10" class="w-full" />
+                </div>
+
+                <!-- Text size -->
+                <div>
+                  <div class="flex items-center justify-between mb-1">
+                    <label class="text-sm font-semibold">Text Size (px)</label>
+                    <div class="flex items-center gap-2">
+                      <button class="ctrl-btn size-dec px-2 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-sm">-</button>
+                      <input id="sizeInput" type="number" min="20" max="120" step="2" class="w-20 rounded-lg bg-black/60 border border-white/10 p-1.5 text-sm text-center" />
+                      <button class="ctrl-btn size-inc px-2 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-sm">+</button>
+                    </div>
+                  </div>
+                  <input id="sizeRange" type="range" min="20" max="120" step="2" class="w-full" />
+                </div>
+
+                <!-- Brightness -->
+                <div>
+                  <div class="flex items-center justify-between mb-1">
+                    <label class="text-sm font-semibold">Theme Brightness</label>
+                    <span id="brightnessLabel" class="text-xs text-white/60">100%</span>
+                  </div>
+                  <input id="brightnessRange" type="range" min="0" max="100" step="1" class="w-full" />
+                </div>
+
+                <!-- Fullscreen & TXT upload -->
+                <div class="flex items-center gap-3">
+                  <button id="settingsFullscreenBtn" class="px-3 py-2 rounded-xl text-sm font-semibold bg-white/10 hover:bg-white/20 focus:outline-none focus:ring-2 focus:ring-white/30 transition">Toggle Fullscreen</button>
+                  <label class="flex-1">
+                    <span class="block text-sm font-semibold mb-1">Upload .txt File</span>
+                    <input id="txtUpload" type="file" accept=".txt" class="block w-full text-sm file:mr-3 file:px-3 file:py-2 file:rounded-lg file:border-0 file:bg-white/10 file:text-white file:hover:bg-white/20" />
+                  </label>
+                </div>
+              </div>
+            </div>
+             <!-- Shortcut Guide -->
+            <div class="mt-6 rounded-2xl border border-white/10 bg-white/5 p-4 sm:p-6">
+                <h3 class="text-sm font-semibold mb-3">Keyboard Shortcuts</h3>
+                <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-x-4 gap-y-2 text-sm">
+                    <div><kbd class="font-mono font-semibold p-1 rounded bg-black/50">Space</kbd> <span class="text-white/70 ml-2">Play / Pause</span></div>
+                    <div><kbd class="font-mono font-semibold p-1 rounded bg-black/50">Shift+Enter</kbd> <span class="text-white/70 ml-2">Toggle Fullscreen</span></div>
+                    <div><kbd class="font-mono font-semibold p-1 rounded bg-black/50">→ </kbd> <span class="text-white/70 ml-2">Next Word</span></div>
+                    <div><kbd class="font-mono font-semibold p-1 rounded bg-black/50">←</kbd> <span class="text-white/70 ml-2">Previous Word</span></div>
+                </div>
+            </div>
+          </div>
+
+          <!-- ANALYZER TAB -->
+          <div id="tab-analyzer" class="tab-panel hidden">
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+              <!-- Stats Cards -->
+              <div class="rounded-2xl border border-white/10 bg-white/5 p-6">
+                <div class="text-sm text-white/60">Time Spent</div>
+                <div id="statTime" class="mt-2 text-3xl font-extrabold">0s</div>
+              </div>
+              <div class="rounded-2xl border border-white/10 bg-white/5 p-6">
+                <div class="text-sm text-white/60">Words Displayed</div>
+                <div id="statWords" class="mt-2 text-3xl font-extrabold">0</div>
+              </div>
+              <div class="rounded-2xl border border-white/10 bg-white/5 p-6">
+                <div class="text-sm text-white/60">Pauses</div>
+                <div id="statPauses" class="mt-2 text-3xl font-extrabold">0</div>
+              </div>
+            </div>
+
+            <!-- Activity Log -->
+            <div class="mt-6 rounded-2xl border border-white/10 bg-white/5 p-4">
+              <div class="flex items-center justify-between mb-3">
+                <h3 class="text-sm font-semibold">Activity Log</h3>
+                <button id="clearLogBtn" class="text-xs px-2 py-1 rounded-lg bg-white/10 hover:bg-white/20">Clear</button>
+              </div>
+              <div id="activityLog" class="thin-scroll h-[260px] overflow-y-auto space-y-2 text-sm"></div>
+            </div>
+          </div>
+
+          <!-- CONVERTER TAB -->
+          <div id="tab-converter" class="tab-panel hidden">
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+              <!-- Left: Upload & Buttons -->
+              <div class="lg:col-span-1 rounded-2xl border border-white/10 bg-white/5 p-4 sm:p-6 space-y-4">
+                <div>
+                  <label class="block text-sm font-semibold mb-2">Upload PDF or EPUB</label>
+                  <input id="convUpload" type="file" accept=".pdf,.epub" class="block w-full text-sm file:mr-3 file:px-3 file:py-2 file:rounded-lg file:border-0 file:bg-white/10 file:text-white file:hover:bg-white/20" />
+                </div>
+                <div id="convStatus" class="text-xs text-white/70"></div>
+                <div class="flex items-center gap-3 pt-2">
+                  <button id="sendToDisplayerBtn" disabled class="flex-1 px-3 py-2 rounded-xl text-sm font-semibold bg-blue-600/30 text-white/60 cursor-not-allowed">Send to Word Displayer</button>
+                  <button id="downloadTxtBtn" disabled class="px-3 py-2 rounded-xl text-sm font-semibold bg-white/10 text-white/60 cursor-not-allowed">Download Text (.txt)</button>
+                </div>
+                <p class="text-xs text-white/50 pt-3">Note: CBZ and MOBI formats are not supported for direct conversion in this tool due to their complexity.</p>
+              </div>
+
+              <!-- Right: Output Text -->
+              <div class="lg:col-span-2 rounded-2xl border border-white/10 bg-white/5 p-4 sm:p-6">
+                <label for="convOutput" class="block text-sm font-semibold mb-2">Converted text will appear here...</label>
+                <textarea id="convOutput" class="w-full h-[340px] rounded-xl bg-black/60 border border-white/10 p-4 text-sm" readonly></textarea>
+              </div>
+            </div>
+
+            <!-- Spinner overlay (hidden by default) -->
+            <div id="convOverlay" class="fixed inset-0 bg-black/80 backdrop-blur-sm hidden items-center justify-center z-40">
+              <div class="flex flex-col items-center gap-3">
+                <svg class="animate-spin h-10 w-10" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                  <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path>
+                </svg>
+                <div class="text-sm">Converting... This may take a moment for large files.</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Creator credit (hidden in fullscreen) -->
+  <div class="creator-credit fixed bottom-3 right-4 text-xs text-white/40">Created by <span class="font-semibold">Han KM</span></div>
+
+  <!-- Fullscreen ONLY word view -->
+  <div id="fullscreenOverlay" class="fixed inset-0 bg-black hidden items-center justify-center z-50 noselect">
+    <div id="fullscreenWord" class="font-extrabold tracking-tight leading-none text-center" style="font-size: 72px;"></div>
+  </div>
+
+  <!-- Custom Modal (notifications / confirmations) -->
+  <div id="modalRoot" class="fixed inset-0 hidden items-center justify-center z-50">
+    <div class="absolute inset-0 bg-black/70"></div>
+    <div class="relative max-w-md w-[92%] bg-[#0b0b0b] border border-white/10 rounded-2xl p-5 shadow-2xl animate-slideUp">
+      <h3 id="modalTitle" class="text-lg font-bold">Notice</h3>
+      <p id="modalMessage" class="mt-2 text-sm text-white/80"></p>
+      <div id="modalButtons" class="mt-4 flex items-center justify-end gap-2"></div>
+    </div>
+  </div>
+
+  <!-- Toast (brief messages) -->
+  <div id="toast" class="fixed left-1/2 -translate-x-1/2 bottom-6 px-3 py-2 rounded-lg bg-white/10 border border-white/10 text-xs hidden"></div>
+
+  <script>
+    // ======= State =======
+    const state = {
+      words: [],
+      index: 0,
+      playing: false,
+      wpm: 300,
+      textSize: 64,
+      brightness: 100,
+      pauseCount: 0,
+      wordsDisplayed: 0,
+      timeSpentSec: 0,
+      lastCountedIndex: -1,
+      playTimer: null,
+      timeTimer: null,
+      wheelCooldown: false,
+      loadedFileName: null,
+    };
+
+    // ======= DOM refs =======
+    const appRoot = document.getElementById('appRoot');
+    const currentWordEl = document.getElementById('currentWord');
+    const fullscreenOverlay = document.getElementById('fullscreenOverlay');
+    const fullscreenWordEl = document.getElementById('fullscreenWord');
+
+    const startPauseBtn = document.getElementById('startPauseBtn');
+    const fullscreenBtn = document.getElementById('fullscreenBtn');
+    const settingsFullscreenBtn = document.getElementById('settingsFullscreenBtn');
+
+    const tabButtons = document.querySelectorAll('.tab-btn');
+    const tabPanels = {
+      settings: document.getElementById('tab-settings'),
+      analyzer: document.getElementById('tab-analyzer'),
+      converter: document.getElementById('tab-converter'),
+    };
+
+    const inputTextEl = document.getElementById('inputText');
+    const autoFullscreenOnStartEl = document.getElementById('autoFullscreenOnStart');
+
+    const wpmInput = document.getElementById('wpmInput');
+    const wpmRange = document.getElementById('wpmRange');
+    const sizeInput = document.getElementById('sizeInput');
+    const sizeRange = document.getElementById('sizeRange');
+    const brightnessRange = document.getElementById('brightnessRange');
+    const brightnessLabel = document.getElementById('brightnessLabel');
+
+    const txtUpload = document.getElementById('txtUpload');
+    
+    const textInfoWordCount = document.getElementById('textInfoWordCount');
+    const textInfoTime = document.getElementById('textInfoTime');
+
+    const statTime = document.getElementById('statTime');
+    const statWords = document.getElementById('statWords');
+    const statPauses = document.getElementById('statPauses');
+
+    const activityLog = document.getElementById('activityLog');
+    const clearLogBtn = document.getElementById('clearLogBtn');
+
+    const convUpload = document.getElementById('convUpload');
+    const convOutput = document.getElementById('convOutput');
+    const convStatus = document.getElementById('convStatus');
+    const convOverlay = document.getElementById('convOverlay');
+    const sendToDisplayerBtn = document.getElementById('sendToDisplayerBtn');
+    const downloadTxtBtn = document.getElementById('downloadTxtBtn');
+
+    const modalRoot = document.getElementById('modalRoot');
+    const modalTitle = document.getElementById('modalTitle');
+    const modalMessage = document.getElementById('modalMessage');
+    const modalButtons = document.getElementById('modalButtons');
+
+    const toast = document.getElementById('toast');
+
+    // ======= Utilities =======
+    function formatTime(sec) {
+      return `${sec}s`;
+    }
+
+    function formatMinutesSeconds(totalSeconds) {
+        if (totalSeconds < 60) {
+            return `0m ${Math.round(totalSeconds)}s`;
+        }
+        const minutes = Math.floor(totalSeconds / 60);
+        const seconds = Math.round(totalSeconds % 60);
+        return `${minutes}m ${seconds}s`;
+    }
+
+    function logEvent(message) {
+      const stamp = new Date().toLocaleTimeString();
+      const item = document.createElement('div');
+      item.className = 'bg-black/40 border border-white/5 rounded-xl p-2';
+      item.innerHTML = `<div class="text-[11px] text-white/50">${stamp}</div><div class="text-sm">${message}</div>`;
+      activityLog.prepend(item);
+    }
+
+    function showToast(message, ms = 1800) {
+      toast.textContent = message;
+      toast.classList.remove('hidden');
+      toast.classList.add('animate-fadeIn');
+      setTimeout(() => {
+        toast.classList.remove('animate-fadeIn');
+        toast.classList.add('animate-fadeOut');
+        setTimeout(() => {
+          toast.classList.add('hidden');
+          toast.classList.remove('animate-fadeOut');
+        }, 250);
+      }, ms);
+    }
+
+    function showModal({ title = 'Notice', message = '', buttons = [{ label: 'OK', intent: 'primary' }] }) {
+      return new Promise(resolve => {
+        modalTitle.textContent = title;
+        modalMessage.textContent = message;
+        modalButtons.innerHTML = '';
+        buttons.forEach(btn => {
+          const b = document.createElement('button');
+          b.textContent = btn.label;
+          b.className = 'px-3 py-1.5 rounded-lg text-sm ' + (btn.intent === 'primary' ? 'bg-blue-600 hover:bg-blue-500' : 'bg-white/10 hover:bg-white/20');
+          b.addEventListener('click', () => {
+            hideModal();
+            resolve(btn.value ?? true);
+          });
+          modalButtons.appendChild(b);
+        });
+        modalRoot.classList.remove('hidden');
+        modalRoot.classList.add('flex');
+      });
+    }
+    function hideModal() {
+      modalRoot.classList.remove('flex');
+      modalRoot.classList.add('hidden');
+    }
+
+    function sanitizeAndSplit(text) {
+      // Normalize whitespace; split by spaces/newlines; keep only non-empty
+      const cleaned = text
+        .replace(/[\t\r]+/g, ' ')
+        .replace(/\s+/g, ' ') // collapse whitespace
+        .trim();
+      if (!cleaned) return [];
+      // Split on spaces; treat punctuation as part of the word for simplicity
+      return cleaned.split(' ');
+    }
+
+    function updateWordDisplays() {
+      const word = state.words[state.index] ?? '';
+      currentWordEl.textContent = word || '—';
+      fullscreenWordEl.textContent = word || '';
+      // Count this display (only once per index change)
+      if (state.index !== state.lastCountedIndex) {
+        state.wordsDisplayed += 1;
+        state.lastCountedIndex = state.index;
+        updateStatsUI();
+      }
+    }
+    
+    function updateTextInfo() {
+        const wordCount = state.words.length;
+        textInfoWordCount.textContent = wordCount;
+        if (wordCount > 0 && state.wpm > 0) {
+            const totalSeconds = (wordCount / state.wpm) * 60;
+            textInfoTime.textContent = formatMinutesSeconds(totalSeconds);
+        } else {
+            textInfoTime.textContent = '0m 0s';
+        }
+    }
+
+    function updateStatsUI() {
+      statTime.textContent = formatTime(state.timeSpentSec);
+      statWords.textContent = String(state.wordsDisplayed);
+      statPauses.textContent = String(state.pauseCount);
+    }
+
+    function setWPM(val) {
+      const n = Math.min(1000, Math.max(50, Math.round(val)));
+      state.wpm = n;
+      wpmInput.value = String(n);
+      wpmRange.value = String(n);
+      updateTextInfo(); // Update time estimate when WPM changes
+      if (state.playing) restartPlaybackTimer();
+    }
+
+    function setTextSize(px) {
+      const n = Math.min(120, Math.max(20, Math.round(px)));
+      state.textSize = n;
+      sizeInput.value = String(n);
+      sizeRange.value = String(n);
+      currentWordEl.style.fontSize = n + 'px';
+      fullscreenWordEl.style.fontSize = Math.max(n, 72) + 'px';
+    }
+
+    function setBrightness(percent) {
+      const n = Math.min(100, Math.max(0, Math.round(percent)));
+      state.brightness = n;
+      brightnessRange.value = String(n);
+      brightnessLabel.textContent = `${n}%`;
+      appRoot.style.filter = `brightness(${n/100})`;
+    }
+
+    function bindIncDec() {
+      document.querySelector('.wpm-inc').addEventListener('click', () => setWPM(state.wpm + 10));
+      document.querySelector('.wpm-dec').addEventListener('click', () => setWPM(state.wpm - 10));
+      document.querySelector('.size-inc').addEventListener('click', () => setTextSize(state.textSize + 2));
+      document.querySelector('.size-dec').addEventListener('click', () => setTextSize(state.textSize - 2));
+    }
+
+    function stopTimers() {
+      if (state.playTimer) {
+        clearInterval(state.playTimer);
+        state.playTimer = null;
+      }
+      if (state.timeTimer) {
+        clearInterval(state.timeTimer);
+        state.timeTimer = null;
+      }
+    }
+
+    function restartPlaybackTimer() {
+      if (!state.playing) return;
+      if (state.playTimer) clearInterval(state.playTimer);
+      const intervalMs = Math.max(20, Math.round(60000 / state.wpm));
+      state.playTimer = setInterval(() => {
+        if (state.index < state.words.length - 1) {
+          state.index += 1;
+          updateWordDisplays();
+        } else {
+          pausePlayback();
+          logEvent('End of text reached.');
+          startPauseBtn.textContent = 'Resume Playback';
+          startPauseBtn.classList.remove('bg-orange-500');
+          startPauseBtn.classList.add('bg-blue-600');
+        }
+      }, intervalMs);
+    }
+
+    function startTimeCounter() {
+      if (state.timeTimer) clearInterval(state.timeTimer);
+      state.timeTimer = setInterval(() => {
+        state.timeSpentSec += 1;
+        statTime.textContent = formatTime(state.timeSpentSec);
+      }, 1000);
+    }
+
+    async function maybePromptFullscreen() {
+      if (!autoFullscreenOnStartEl.checked) return true;
+      const yes = await showModal({
+        title: 'Enter Fullscreen?',
+        message: 'Fullscreen shows only the current word on a pure black background. You can exit anytime with Esc.',
+        buttons: [
+          { label: 'Not now', intent: 'secondary', value: false },
+          { label: 'Go Fullscreen', intent: 'primary', value: true },
+        ]
+      });
+      if (yes) await enterFullscreen();
+      return yes; // Return the user's choice
+    }
+
+    function playPlayback() {
+      if (!state.words.length) {
+        showModal({ title: 'No text', message: 'Please paste or load some text first.' });
+        return;
+      }
+      state.playing = true;
+      startPauseBtn.textContent = 'Pause Playback';
+      startPauseBtn.classList.remove('bg-blue-600');
+      startPauseBtn.classList.add('bg-orange-500');
+      logEvent('Playback started.');
+      restartPlaybackTimer();
+      startTimeCounter();
+    }
+
+    function pausePlayback() {
+      if (!state.playing) return;
+      state.playing = false;
+      stopTimers();
+      state.pauseCount += 1;
+      updateStatsUI();
+      startPauseBtn.textContent = 'Resume Playback';
+      startPauseBtn.classList.remove('bg-orange-500');
+      startPauseBtn.classList.add('bg-blue-600');
+      logEvent(`Playback paused at word "${state.words[state.index] ?? ''}" (index ${state.index+1}/${state.words.length}).`);
+    }
+
+    function togglePlayback() {
+      if (state.playing) {
+        pausePlayback();
+      } else {
+        if (document.fullscreenElement) {
+          playPlayback();
+          return;
+        }
+        
+        maybePromptFullscreen().then(proceed => {
+          if (proceed) {
+            playPlayback();
+          }
+        });
+      }
+    }
+
+    async function enterFullscreen() {
+      try {
+        if (!document.fullscreenElement) {
+          await document.documentElement.requestFullscreen();
+        }
+        document.body.classList.add('is-fullscreen');
+        fullscreenOverlay.classList.remove('hidden');
+        fullscreenOverlay.classList.add('flex');
+        updateWordDisplays();
+      } catch (e) {
+        console.warn('Fullscreen error:', e);
+      }
+    }
+
+    async function exitFullscreen() {
+      try {
+        if (document.fullscreenElement) await document.exitFullscreen();
+      } catch (e) {
+        console.warn('exitFullscreen error', e);
+      } finally {
+        document.body.classList.remove('is-fullscreen');
+        fullscreenOverlay.classList.add('hidden');
+        fullscreenOverlay.classList.remove('flex');
+      }
+    }
+
+    function toggleFullscreen() {
+      if (document.fullscreenElement) {
+        exitFullscreen();
+      } else {
+        enterFullscreen();
+      }
+    }
+
+    function nudgeWord(delta) {
+      if (!state.words.length) return;
+      const next = Math.min(Math.max(0, state.index + delta), state.words.length - 1);
+      if (next !== state.index) {
+        state.index = next;
+        updateWordDisplays();
+      }
+    }
+
+    function resetForNewText() {
+      state.index = 0;
+      state.playing = false;
+      stopTimers();
+      state.pauseCount = 0;
+      state.wordsDisplayed = 0;
+      state.timeSpentSec = 0;
+      state.lastCountedIndex = -1;
+      startPauseBtn.textContent = 'Start Playback';
+      startPauseBtn.classList.remove('bg-orange-500');
+      startPauseBtn.classList.add('bg-blue-600');
+      updateStatsUI();
+      updateWordDisplays();
+      updateTextInfo();
+    }
+
+    async function handleTextFile(file) {
+        if (!file || !file.type === 'text/plain') {
+            showModal({ title: 'Invalid File', message: 'Please drop a valid .txt file.' });
+            return;
+        }
+        try {
+            const text = await file.text();
+            inputTextEl.value = text;
+            state.loadedFileName = file.name;
+            state.words = sanitizeAndSplit(text);
+            resetForNewText();
+            logEvent(`File "${file.name}" loaded via drag & drop.`);
+            showToast('Text file loaded');
+        } catch (err) {
+            console.error(err);
+            logEvent(`Error reading file: ${file?.name || ''}`);
+            showModal({ title: 'File error', message: 'Could not read the selected .txt file.' });
+        }
+    }
+
+    // ======= Listeners =======
+    startPauseBtn.addEventListener('click', togglePlayback);
+    fullscreenBtn.addEventListener('click', toggleFullscreen);
+    settingsFullscreenBtn.addEventListener('click', toggleFullscreen);
+
+    document.addEventListener('fullscreenchange', () => {
+      const fs = !!document.fullscreenElement;
+      if (!fs) {
+        document.body.classList.remove('is-fullscreen');
+        fullscreenOverlay.classList.add('hidden');
+        fullscreenOverlay.classList.remove('flex');
+      } else {
+        document.body.classList.add('is-fullscreen');
+        fullscreenOverlay.classList.remove('hidden');
+        fullscreenOverlay.classList.add('flex');
+      }
+    });
+
+    window.addEventListener('keydown', (e) => {
+      const focusedEl = document.activeElement;
+      const isInputFocused = focusedEl.tagName === 'TEXTAREA' || focusedEl.tagName === 'INPUT';
+
+      if (e.shiftKey && e.key === 'Enter') {
+        e.preventDefault();
+        toggleFullscreen();
+        return;
+      }
+      
+      if (isInputFocused) return;
+
+      if (e.key === ' ') {
+        e.preventDefault();
+        togglePlayback();
+      } else if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        nudgeWord(1);
+      } else if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        nudgeWord(-1);
+      }
+    }, { passive: false });
+
+    fullscreenOverlay.addEventListener('wheel', (e) => {
+      if (state.wheelCooldown) return;
+      state.wheelCooldown = true;
+      setTimeout(() => (state.wheelCooldown = false), 90);
+      if (state.playing) pausePlayback();
+      const dir = e.deltaY > 0 ? 1 : -1;
+      nudgeWord(dir);
+    }, { passive: true });
+
+    tabButtons.forEach(btn => btn.addEventListener('click', () => {
+      const name = btn.getAttribute('data-tab');
+      Object.entries(tabPanels).forEach(([k, el]) => {
+        if (k === name) {
+          el.classList.remove('hidden');
+        } else {
+          el.classList.add('hidden');
+        }
+      });
+      tabButtons.forEach(b => b.classList.remove('bg-white/10'));
+      btn.classList.add('bg-white/10');
+    }));
+
+    wpmInput.addEventListener('input', () => setWPM(Number(wpmInput.value || 0)));
+    wpmRange.addEventListener('input', () => setWPM(Number(wpmRange.value)));
+    sizeInput.addEventListener('input', () => setTextSize(Number(sizeInput.value || 0)));
+    sizeRange.addEventListener('input', () => setTextSize(Number(sizeRange.value)));
+    brightnessRange.addEventListener('input', () => setBrightness(Number(brightnessRange.value)));
+
+    bindIncDec();
+
+    // TXT upload (click)
+    txtUpload.addEventListener('change', (e) => {
+      const file = e.target.files?.[0];
+      if (file) handleTextFile(file);
+    });
+
+    // TXT upload (drag and drop)
+    inputTextEl.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        inputTextEl.classList.add('drag-over');
+    });
+    inputTextEl.addEventListener('dragleave', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        inputTextEl.classList.remove('drag-over');
+    });
+    inputTextEl.addEventListener('drop', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        inputTextEl.classList.remove('drag-over');
+        const file = e.dataTransfer?.files?.[0];
+        if (file) handleTextFile(file);
+    });
+
+
+    clearLogBtn.addEventListener('click', () => {
+      activityLog.innerHTML = '';
+      showToast('Activity log cleared');
+    });
+
+    let syncTimer = null;
+    inputTextEl.addEventListener('input', () => {
+      if (syncTimer) clearTimeout(syncTimer);
+      syncTimer = setTimeout(() => {
+        state.words = sanitizeAndSplit(inputTextEl.value);
+        resetForNewText();
+        logEvent('Input text updated.');
+      }, 250);
+    });
+
+    // ======= Converter (PDF/EPUB) =======
+    convUpload.addEventListener('change', async (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      convOutput.value = '';
+      sendToDisplayerBtn.disabled = true;
+      sendToDisplayerBtn.classList.add('bg-blue-600/30','text-white/60','cursor-not-allowed');
+      downloadTxtBtn.disabled = true;
+      downloadTxtBtn.classList.add('text-white/60','cursor-not-allowed');
+
+      const ext = file.name.split('.').pop().toLowerCase();
+      convStatus.textContent = `File \"${file.name}\" queued for conversion...`;
+      logEvent(`Conversion started for file "${file.name}".`);
+      convOverlay.classList.remove('hidden');
+      convOverlay.classList.add('flex');
+      try {
+        const buf = await file.arrayBuffer();
+        let text = '';
+        if (ext === 'pdf') {
+          text = await extractTextFromPDF(buf);
+        } else if (ext === 'epub') {
+          text = await extractTextFromEPUB(buf);
+        } else {
+          throw new Error('Unsupported file type: ' + ext);
+        }
+        convOutput.value = text.trim();
+        convStatus.textContent = `Conversion complete (${(text.length/1000).toFixed(1)}k chars).`;
+        logEvent(`Conversion completed for "${file.name}".`);
+        sendToDisplayerBtn.disabled = false;
+        sendToDisplayerBtn.classList.remove('bg-blue-600/30','text-white/60','cursor-not-allowed');
+        downloadTxtBtn.disabled = false;
+        downloadTxtBtn.classList.remove('text-white/60','cursor-not-allowed');
+      } catch (err) {
+        console.error(err);
+        convStatus.textContent = 'Conversion error: ' + (err?.message || 'Unknown error');
+        logEvent('Conversion error: ' + (err?.message || 'Unknown'));
+        showModal({ title: 'Conversion error', message: 'There was a problem converting this file. Make sure it\'s a valid PDF or EPUB.' });
+      } finally {
+        convOverlay.classList.add('hidden');
+        convOverlay.classList.remove('flex');
+      }
+    });
+
+    sendToDisplayerBtn.addEventListener('click', () => {
+      inputTextEl.value = convOutput.value;
+      state.words = sanitizeAndSplit(convOutput.value);
+      resetForNewText();
+      document.querySelector('[data-tab="settings"]').click();
+      showToast('Converted text sent to Word Displayer');
+      logEvent('Converted text sent to Input Text.');
+    });
+
+    downloadTxtBtn.addEventListener('click', () => {
+      const blob = new Blob([convOutput.value || ''], { type: 'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'converted_text.txt';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      showToast('Downloaded converted_text.txt');
+      logEvent('Converted text downloaded as converted_text.txt');
+    });
+
+    async function extractTextFromPDF(arrayBuffer) {
+      if (!window['pdfjsLib']) throw new Error('PDF.js not available');
+      const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
+      const pdf = await loadingTask.promise;
+      const maxPages = pdf.numPages;
+      let text = '';
+      for (let pageNum = 1; pageNum <= maxPages; pageNum++) {
+        const page = await pdf.getPage(pageNum);
+        const content = await page.getTextContent();
+        const strings = content.items.map(it => ('str' in it) ? it.str : (it?.unicode || ''));
+        text += strings.join(' ') + '\n\n';
+      }
+      return text;
+    }
+
+    async function extractTextFromEPUB(arrayBuffer) {
+      if (!window['JSZip']) throw new Error('JSZip not available');
+      const zip = await JSZip.loadAsync(arrayBuffer);
+
+      const containerPath = 'META-INF/container.xml';
+      const containerFile = zip.file(containerPath);
+      if (!containerFile) {
+        return await naiveEPUBText(zip);
+      }
+      const containerXML = await containerFile.async('text');
+      const parser = new DOMParser();
+      const containerDoc = parser.parseFromString(containerXML, 'application/xml');
+      const rootfileEl = containerDoc.querySelector('rootfile');
+      const opfPath = rootfileEl?.getAttribute('full-path');
+      if (!opfPath) return await naiveEPUBText(zip);
+
+      const opfDir = opfPath.includes('/') ? opfPath.substring(0, opfPath.lastIndexOf('/') + 1) : '';
+      const opfFile = zip.file(opfPath);
+      if (!opfFile) return await naiveEPUBText(zip);
+
+      const opfXML = await opfFile.async('text');
+      const opfDoc = parser.parseFromString(opfXML, 'application/xml');
+
+      const idHref = {};
+      opfDoc.querySelectorAll('manifest > item').forEach((item) => {
+        idHref[item.getAttribute('id')] = item.getAttribute('href');
+      });
+
+      const spineItems = Array.from(opfDoc.querySelectorAll('spine > itemref')).map((it) => it.getAttribute('idref'));
+      let orderedPaths = spineItems
+        .map(id => idHref[id])
+        .filter(Boolean)
+        .map(href => opfDir + href);
+
+      if (!orderedPaths.length) {
+        return await naiveEPUBText(zip);
+      }
+
+      let finalText = '';
+      for (const p of orderedPaths) {
+        const file = zip.file(p);
+        if (!file) continue;
+        const html = await file.async('text');
+        finalText += htmlToPlain(html) + '\n\n';
+      }
+      return finalText;
+    }
+
+    async function naiveEPUBText(zip) {
+      let files = [];
+      zip.forEach((relPath, file) => {
+        if (!file.dir && /\.(xhtml|html)$/i.test(relPath)) files.push(relPath);
+      });
+      files.sort();
+      let out = '';
+      for (const p of files) {
+        const html = await zip.file(p).async('text');
+        out += htmlToPlain(html) + '\n\n';
+      }
+      return out;
+    }
+
+    function htmlToPlain(html) {
+      const doc = new DOMParser().parseFromString(html, 'text/html');
+      doc.querySelectorAll('script,style,noscript').forEach(n => n.remove());
+      const text = doc.body?.innerText || '';
+      return text.replace(/\s+/g, ' ').trim();
+    }
+
+    // ======= Init =======
+    function init() {
+      // Defaults
+      setWPM(300);
+      setTextSize(64);
+      setBrightness(100);
+      inputTextEl.value = '';
+      state.words = [];
+      updateWordDisplays();
+      updateStatsUI();
+      updateTextInfo();
+
+      // Hint sample text on first time
+      currentWordEl.textContent = 'Ready?';
+      fullscreenWordEl.textContent = '';
+      logEvent('App ready.');
+      logEvent('Tip: Use Space to start/pause, Arrow keys to step, and Shift+Enter for immersive mode.');
+    }
+
+    init();
+  </script>
+</body>
+</html>
