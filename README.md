@@ -1,5 +1,8 @@
 Fast Word Displayer
 
+test here
+https://hankm-99.github.io/Fast-word-displayer-beta/
+
 A clean, no-nonsense, word-by-word reader with an immersive fullscreen mode, simple controls, a built-in Analyzer for your reading stats, and a Converter that turns PDFs/EPUBs into plain text right in the browser. No servers. No logins. Just open the page and read.
 
 What it does (in plain terms)
